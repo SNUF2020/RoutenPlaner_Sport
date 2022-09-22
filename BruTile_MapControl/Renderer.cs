@@ -7,6 +7,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Globalization;
 using System.IO;
+using System.Windows.Forms;
 
 namespace RPS
 {
@@ -21,8 +22,6 @@ namespace RPS
             _canvas2 = canvas2;
         }
 
-
-
         public void Render(Viewport viewport, ITileSource tileSource, ITileCache<Tile<Image>> tileCache, List<List<Data>> AllRoutes,
             double _minX_Value, double _maxX_Value, List<string[]> _RegShape, bool _boundary, List<List<string[]>> _all_RegShapes,
             Point _mousePosition, bool _newDB, List<string[]> _all_SRTMShapes)
@@ -33,8 +32,6 @@ namespace RPS
             // ploting map
             using (var g = Graphics.FromImage(_canvas))
             {
-                //g.Clear(Color.White);
-
                 foreach (var tileInfo in tileInfos)
                 {
                     var extent = viewport.WorldToScreen(tileInfo.Extent.MinX, tileInfo.Extent.MinY,
@@ -56,10 +53,10 @@ namespace RPS
                 if (_newDB)
                 {
                     string strWorkPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+                    string[] shape_files = Directory.GetFiles(strWorkPath + @"\Router_DB", "*.shape.csv");
 
                     List<Point[]> reg_Shapes_all = new List<Point[]>();
 
-                    string[] shape_files = Directory.GetFiles(strWorkPath + @"\Router_DB", "*.shape.csv");
 
                     for (int s = 0; s < _all_RegShapes.Count; s++)
                     {
