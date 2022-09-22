@@ -2,6 +2,7 @@
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
+using System.Linq;
 using System.Text;
 using System.Windows.Forms;
 
@@ -9,11 +10,114 @@ namespace RPS
 {
     class RoutingHelpers
     {
-        public static List<List<string[]>> fetchShapeFiles()
+        public static List<double> GetEleData(List<List<Data>> Input)
+        {
+            List<List<Data>> _Input = Input;
+            List<double> _Output = new List<double>();
+
+            if (Input.Any()) //prevent IndexOutOfRangeException for empty list - code snippet from code.grepper.com
+            {
+                for (int i = 0; i < _Input.Count; i++)
+                {
+                    for (int k = 0; k < _Input[i].Count; k++)
+                    {
+                        double newElement = _Input[i][k].Alt;
+                        _Output.Add(newElement);
+                    }
+                }
+            }
+            else
+            {
+                double newElement1 = 0;
+                _Output.Add(newElement1);
+            }
+
+            return _Output;
+
+        }
+        public static List<double> SavitzkyGolayFilter(List<double> data_list)
+        {
+            List<double> Output = new List<double>(data_list);
+
+            for (int i = 0; i < data_list.Count; i++)
+            {
+                if (i >= 12 & i < data_list.Count - 12)
+                {
+                    Output[i] =
+                    (data_list[i - 12] * -253 + data_list[i - 11] * -138
+                    + data_list[i - 10] * -33 + data_list[i - 9] * 62
+                    + data_list[i - 8] * 147 + data_list[i - 7] * 222
+                    + data_list[i - 6] * 287 + data_list[i - 5] * 343
+                    + data_list[i - 4] * 387 + data_list[i - 3] * 422
+                    + data_list[i - 2] * 447 + data_list[i - 1] * 462
+                    + data_list[i] * 467
+                    + data_list[i + 1] * 462 + data_list[i + 2] * 447
+                    + data_list[i + 3] * 422 + data_list[i + 4] * 387
+                    + data_list[i + 5] * 343 + data_list[i + 6] * 287
+                    + data_list[i + 7] * 222 + data_list[i + 8] * 147
+                    + data_list[i + 9] * 62 + data_list[i + 10] * -33
+                    + data_list[i + 11] * -138 + data_list[i + 12] * -253) / 5175;
+                }
+                else
+                {
+                    if (i >= 8 & i < data_list.Count - 8)
+                    {
+                        Output[i] = (data_list[i - 8] * -21
+                            + data_list[i - 7] * -6
+                            + data_list[i - 6] * 7
+                            + data_list[i - 5] * 18
+                            + data_list[i - 4] * 27
+                            + data_list[i - 3] * 34
+                            + data_list[i - 2] * 39
+                            + data_list[i - 1] * 42
+                            + data_list[i] * 43
+                            + data_list[i + 1] * 42
+                            + data_list[i + 2] * 39
+                            + data_list[i + 3] * 34
+                            + data_list[i + 4] * 27
+                            + data_list[i + 5] * 18
+                            + data_list[i + 6] * 7
+                            + data_list[i + 7] * -6
+                            + data_list[i + 8] * -21) / 323;
+                    }
+                    else
+                    {
+                        if (i >= 4 & i < data_list.Count - 4)
+                        {
+                            Output[i] =
+                                (data_list[i - 4] * -21
+                                + data_list[i - 3] * 14
+                                + data_list[i - 2] * 39
+                                + data_list[i - 1] * 54
+                                + data_list[i] * 59
+                                + data_list[i + 1] * 54
+                                + data_list[i + 2] * 39
+                                + data_list[i + 3] * 14
+                                + data_list[i + 4] * -21) / 231;
+                        }
+                        else
+                        {
+                            if (i >= 2 & i < data_list.Count - 2)
+                            {
+                                Output[i] =
+                                    (data_list[i - 2] * -3
+                                    + data_list[i - 1] * 12
+                                    + data_list[i] * 17
+                                    + data_list[i + 1] * 12
+                                    + data_list[i + 2] * -3) / 35;
+                            }
+                        }
+                    }
+                }
+            }
+
+            return Output;
+        }
+        public static List<List<string[]>> FetchShapeFiles()
         {
             string strWorkPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-
             string[] shape_files = Directory.GetFiles(strWorkPath + @"\Router_DB", "*.shape.csv");
+
             List<List<string[]>> _all_RegShape = new List<List<string[]>>();
 
             foreach (string f in shape_files)
@@ -22,15 +126,15 @@ namespace RPS
 
                 try
                 {
-                    // Datei öffnen, hier als UTF8
+                    // open file, here: UTF8
                     using (StreamReader sr = new StreamReader(f, Encoding.UTF8))
                     {
                         _RegShape.Clear();
 
-                        // bis Dateiende lesen
+                        // read file until end
                         while (!sr.EndOfStream)
                         {
-                            // Zeile einlesen und anhand des Trennzeichens "; " in einzelne Spalten (stringarray) splitten
+                            // read single line and split with seperattor sign ";" into columns (stringarray)
                             string[] currentline = sr.ReadLine().Replace(",", ".").Split(new string[] { ";" }, StringSplitOptions.None);
                             _RegShape.Add(currentline);
                         }
@@ -47,11 +151,11 @@ namespace RPS
             return _all_RegShape;
         }
 
-        public static List<string[]> fetchSRTMFiles()
+        public static List<string[]> FetchSRTMFiles()
         {
             string strWorkPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-
             string[] SRTM_files = Directory.GetFiles(strWorkPath + @"\SRTM_Data", "*.hgt");
+
             List<string[]> _all_SRTMs = new List<string[]>();
 
             foreach (string srtm in SRTM_files)
@@ -143,7 +247,7 @@ namespace RPS
             return min_Lon;
         }
 
-        public static int? check4NegativeValue(int? _value)
+        public static int? Check4NegativeValue(int? _value)
         {
             if (_value > 9000)
             {
@@ -171,8 +275,6 @@ namespace RPS
             }
             return result;
         }
-
-
 
         public static bool IsPointInPolygon4(PointF[] polygon, Point testPoint)
         {
@@ -305,7 +407,7 @@ namespace RPS
         {
             return (radian / Math.PI * 180.0);
         }
-        public static double getmaxEle(List<List<Data>> _AllRoutes)
+        public static double GetmaxEle(List<List<Data>> _AllRoutes)
         {
             double max_Ele = _AllRoutes[0][0].Alt;
             for (int i = 0; i < _AllRoutes.Count; i++)
@@ -319,7 +421,7 @@ namespace RPS
             return max_Ele;
         }
 
-        public static double getminEle(List<List<Data>> _AllRoutes)
+        public static double GetminEle(List<List<Data>> _AllRoutes)
         {
             double min_Ele = _AllRoutes[0][0].Alt;
             for (int i = 0; i < _AllRoutes.Count; i++)

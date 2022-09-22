@@ -9,7 +9,6 @@ namespace RPS
 {
     class RoutingIO
     {
-
         public static List<string[]> Load_RegShape(string _shapeFile, List<string[]> _RegShape_act)
         {
             List<string[]> _RegShape = new List<string[]>();
@@ -18,14 +17,14 @@ namespace RPS
 
             try
             {
-                // Datei öffnen, hier als UTF8
+                // open file, here: UTF8
                 using (StreamReader sr = new StreamReader(strWorkPath + @"\\Router_DB\\" + _shapeFile, Encoding.UTF8))
                 {
 
-                    // bis Dateiende lesen
+                    // read file until end
                     while (!sr.EndOfStream)
                     {
-                        // Zeile einlesen und anhand des Trennzeichens "; " in einzelne Spalten (stringarray) splitten
+                        // read single line and split with seperattor sign ";" into columns (stringarray)
                         string[] currentline = sr.ReadLine().Replace(",", ".").Split(new string[] { ";" }, StringSplitOptions.None);
                         _RegShape.Add(currentline);
                     }
@@ -41,29 +40,7 @@ namespace RPS
             return _RegShape;
         }
 
-        public static string Get_RootPath()
-        {
-            int level = 0;
-            string _root_path = Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-            string root_dummy = _root_path;
-            // get the depth of directory system (= count number "\"
-            while (root_dummy != null)
-            {
-                root_dummy = System.IO.Path.GetDirectoryName(root_dummy);
-                level++;
-            }
-
-            // get root path = C:\User\xxx\ - assuming that below this root path the directory structure is identical on every laptop
-            for (int i = 0; i < level - 3; i++)
-            {
-
-                _root_path = Path.GetDirectoryName(_root_path);
-            }
-
-            return _root_path;
-        }
-
-        public static void save_Track(List<List<Data>> _AllRoutes, DateTime _localDate)
+        public static void Save_Track(List<List<Data>> _AllRoutes, DateTime _localDate)
         {
             if (_AllRoutes != null)
             {
@@ -86,7 +63,7 @@ namespace RPS
 
                             // Start-Element/-Attribute "gpx": code snippet from https://github.com/macias/Gpx/tree/master/Gpx 
                             const string GPX_VERSION = "1.1";
-                            const string GPX_CREATOR = "http://dlg.krakow.pl/gpx";
+                            const string GPX_CREATOR = "RoutenPlanerSport";
                             const string GARMIN_EXTENSIONS_PREFIX = "gpxx";
                             const string GARMIN_WAYPOINT_EXTENSIONS_PREFIX = "gpxwpx";
                             const string GARMIN_TRACKPOINT_EXTENSIONS_V2_PREFIX = "gpxtpx";
@@ -128,9 +105,22 @@ namespace RPS
                                     writer.WriteString(_localDate.AddSeconds((double)_AllRoutes[i][k].Time).ToString("yyyy-MM-ddTHH':'mm':'ss.FFFZ"));
                                     writer.WriteEndElement(); // time                                    
 
+                                    writer.WriteStartElement("road");
+                                    writer.WriteString(_AllRoutes[i][k].Road.ToString().Replace(',', '.'));
+                                    writer.WriteEndElement(); // way
+
+                                    writer.WriteStartElement("way");
+                                    writer.WriteString(_AllRoutes[i][k].Rought_Road.ToString().Replace(',', '.'));
+                                    writer.WriteEndElement(); // way
+
+                                    writer.WriteStartElement("path");
+                                    writer.WriteString(_AllRoutes[i][k].Path.ToString().Replace(',', '.'));
+                                    writer.WriteEndElement(); // way
+
                                     writer.WriteEndElement(); // trkpt
                                 }
                             }
+
                             writer.WriteEndElement(); // trkseg
 
                             writer.WriteEndElement(); // trk
