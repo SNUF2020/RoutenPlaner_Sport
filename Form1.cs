@@ -17,30 +17,43 @@ using System.Linq;
 using System.Windows.Forms;
 using System.Windows.Forms.DataVisualization.Charting;
 using System.Xml;
+using System.Net.Mail;
 
-//
-// S.Nuf.2021
-// Code under MIT Licence
-//
-// RPS = Routen Planer Sport Version2.2 (Version2.0 -> First Release, now V2.1 is with localizied folder system (all in bin-folder), V2.2 for GitHub)
-//
-// Source of MapControl: see GitHub Project BruTile > Samples > BruTile.Demo (WPF) -> Transformed to WinForm -> RPSV1.0   
+// Code by S.Nuf.2022 (MIT Licence)
+// RPS = Routen Planer Sport, Version5.0
 //
 // Structure of code: First part = Routing etc. / second part = elevation chart / Third part = MapControl
 //
-// Correlations: Longitude (Längengrad) = X-direction / Latitude (Breitengrad) = Y-Direction
+// Ver.1:
+//  Source of MapControl: see GitHub Project BruTile > Samples > BruTile.Demo (WPF) -> Adapted to WinForm   
+//  Map data: Thunderforest (API key necessary) or OSM and Bing (w/o API key)
+//  Doku Routenplaner: https://docs.itinero.tech/docs/osmsharp/index.html
+//  Raw data for routerDB (osm.pbf files): http://download.geofabrik.de/
+//  Embedding of elevation data: https://github.com/itinero/srtm 
+//  Elevation data from http://viewfinderpanoramas.org/dem3.html (90m-resolution, Alpes 30m) and (better): 
+//   from https://e4ftl01.cr.usgs.gov/MEASURES/SRTMGL1.003/2000.02.11/ (NASA, world-wide with 30m-resolution)
+//   Problem at both servers: Downloading of data at running program does not work -> Since app. 2014 from server-side disabled 
+//   -> Data will be downloaded to local disc (at NASA server password required)
+//   All elevation data are stored in SRTM_Data at SRTM-folder
 //
-// Doku:
-// Map data: Thunderforest (API key necessary) or OSM and Bing (w/o API key)
-// Doku Routenplaner: https://docs.itinero.tech/docs/osmsharp/index.html
-// Raw data for routerDB (osm.pbf files): http://download.geofabrik.de/
-// Doku GPX-Writer/Reader: https://github.com/macias/Gpx/blob/master/Gpx/Implementation/GpxWriter.cs
-// Embedding of elevation data: https://github.com/itinero/srtm 
-// elevation data from http://viewfinderpanoramas.org/dem3.html (90m-resolution, Alpes 30m) and (better): 
-// from https://e4ftl01.cr.usgs.gov/MEASURES/SRTMGL1.003/2000.02.11/ (NASA, world-wide with 30m-resolution)
-// Problem at both servers: Downloading of data at running program does not work -> Since app. 2014 from server-side disabled 
-// -> Data will be downloaded to local disc (at NASA server password required)
-// All elevation data are stored in SRTM_Data at bin-folder
+// Ver.2:
+//  Categorize surface of route (for my hikking buddys, sometimes complaining over to much asphalt streets) - Definitions:
+//   Property "Highway = track" means "Rough road normally used for agricultural or forestry uses" = Feld-/Forstweg
+//   Property "Highway = path" means " hiking path/trail" = Wanderweg
+//   All other highway properties = solid road = asphaltierte Straße
+//   See also: https://wiki.openstreetmap.org/wiki/Highways and https://wiki.openstreetmap.org/wiki/Hiking
+//
+// Ver.3:
+//  Implementation of GpxReader.cs etc.: Source code based on dlg.krakow.pl code (copyright (c) 2011-2016, dlg.krakow.pl) 
+//  Doku GPX-Writer/Reader: https://github.com/macias/Gpx/blob/master/Gpx/Implementation/GpxWriter.cs
+//
+// Ver.4:
+//  Implementation of mail-forward funtion (sending GPX file to specific mail-adress)
+//  Implementaion of elevation (ascent and descent) -> Savitzky-Golay Filter w/ dynamic range at edges of trial data
+//  Elevation information will replace duration information 
+//
+// Ver.5:
+//  Implementation of config-file (see class ConfigFileReader)
 
 namespace RPS
 {
@@ -49,15 +62,39 @@ namespace RPS
         //
         // General Constructor Form1
         //
-
         public Form1()
         {
             InitializeComponent();
             // DoubleBuffered = True (see Form1)
 
+            ConfigFile_Load();
             InitializeMapControl();
             InitializeRouting();
         }
+      
+        // General methods
+        //
+        private void ConfigFile_Load()
+        {
+            try
+            {
+                using (ConfigFileReader reader = new ConfigFileReader(new FileStream("RPS_ConfigFile.txt", FileMode.Open)))
+                {
+                    API_key = reader.ConfigContent.ApiKey_Landscape;
+                    Mail_key = reader.ConfigContent.ApiKey_MailKey;
+                    Mail_Username = reader.ConfigContent.ApiKey_MailUser;
+                    // 
+                    Initial_Lon = Convert.ToDouble(reader.ConfigContent.StartPoint_Lon, CultureInfo.InvariantCulture);
+                    Initial_Lat = Convert.ToDouble(reader.ConfigContent.StartPoint_Lat, CultureInfo.InvariantCulture);
+                    Initial_Zoom = Convert.ToDouble(reader.ConfigContent.StartPoint_Zoom, CultureInfo.InvariantCulture);
+                    Initial_RouterDB = reader.ConfigContent.StarRouter_DB;
+                }
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message + " ConfigFile_Load");
+            }
+        } // Initial load of config file
 
         // --------------------------------------------------------------------------------------------------------------
         //
@@ -67,10 +104,30 @@ namespace RPS
         //
         // Routing Fields
         //
+        //private string root_path;
 
-        // working directory (should be ".../bin")
-        private string strWorkPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
-        private string API_key = "place here your API key for thunderforest";
+        // For general code version: Working directory -> ".../bin"
+        private static string strWorkPath = System.IO.Path.GetDirectoryName(System.Reflection.Assembly.GetExecutingAssembly().Location);
+        // All relevant data is stored in directories below this path.
+        // - Router_DB
+        // - SRTM_Data
+        // - Tracks
+        
+        // Map and email -> See config file
+        private string API_key; // for thunderstorm maps, etc.
+        private string Mail_key;
+        private string Mail_Username;
+
+        // Initial starting point = BW, Stuttgart-Rohr -> see config file 
+        private string Initial_RouterDB;
+        private double Initial_Lon;
+        private double Initial_Lat;
+        private double Initial_Zoom;
+
+        int Gesamtstrecke = 0;
+        double GesamtAsphalt = 0;
+        double GesamtWeg = 0;
+        double GesamtPfad = 0;
 
         // Shape of routerDB, all routerDB's and all SRTM areas
         List<string[]> RegShape = new List<string[]>();
@@ -79,10 +136,9 @@ namespace RPS
 
         List<List<Data>> AllRoutes = new List<List<Data>>();
         List<Data> MouseKlicks = new List<Data>();
-        int Gesamtzeit = 0;
-        int Gesamtstrecke = 0;
 
         DateTime localDate = DateTime.Now;
+        int Gesamtzeit = 0;
 
         RouterDb routerDb = null;
         Itinero.Profiles.Profile profile = null;
@@ -95,7 +151,11 @@ namespace RPS
         private bool cross = false;
         private bool race = false;
         private bool _newDB = false;
-
+        
+        //
+        // Gpx reading
+        bool readerProcess_ok = false;
+        
         //
         // Marking elevation data in chart_ele:
         //
@@ -122,13 +182,13 @@ namespace RPS
         //
         private void InitializeRouting()
         {
-            load_routerDB(strWorkPath + @"/Router_DB/GER-BaW.routerdb_All", false);
+            Load_routerDB(strWorkPath + @"/Router_DB/" + Initial_RouterDB, false);
 
-            all_RegShape = RoutingHelpers.fetchShapeFiles();
-            all_srtmShape = RoutingHelpers.fetchSRTMFiles();
+            all_RegShape = RoutingHelpers.FetchShapeFiles();
+            all_srtmShape = RoutingHelpers.FetchSRTMFiles();
         }
 
-        private void load_routerDB(string _filename, bool _message)
+        private void Load_routerDB(string _filename, bool _message)
         {
             try
             {
@@ -152,6 +212,55 @@ namespace RPS
             {
                 Cursor = Cursors.Default;
             }
+        }
+
+        private void Calc_Elevation(List<double> data_list)
+        {
+            List<double> _data_list = RoutingHelpers.SavitzkyGolayFilter(data_list);
+
+            double up = 0;
+            double down = 0;
+
+            double old_value = _data_list[0];
+
+            for (int i = 1; i < _data_list.Count; i++)
+            {
+                double diff = _data_list[i] - old_value;
+                old_value = _data_list[i];
+                if (diff >= 0)
+                {
+                    up += diff;
+                }
+                else
+                {
+                    down += diff;
+                }
+            }
+
+            textBox_ElevUp.Text = up.ToString("#0") + " m";
+            textBox_ElevDown.Text = down.ToString("#0") + " m";
+        }
+
+        private void Get_SurfaceInformation(List<Data> Input)
+        {
+            List<Data> _Input = Input;
+
+            GesamtAsphalt = 0;
+            GesamtWeg = 0;
+            GesamtPfad = 0;
+
+            for (int i = 0; i < _Input.Count; i++)
+            {
+                if (_Input[i].Road > GesamtAsphalt) GesamtAsphalt = _Input[i].Road;
+                if (_Input[i].Rought_Road > GesamtWeg) GesamtWeg = _Input[i].Rought_Road;
+                if (_Input[i].Path > GesamtPfad) GesamtPfad = _Input[i].Path;
+            }
+
+            // last track segemnet is not in - therefore additional procedure...
+
+            GesamtAsphalt += _Input[_Input.Count - 1].Road;
+            GesamtWeg += _Input[_Input.Count - 1].Rought_Road;
+            GesamtPfad += _Input[_Input.Count - 1].Path;
         }
 
         private void Center_Track(List<List<Data>> _AllRoutes)
@@ -181,133 +290,58 @@ namespace RPS
             }
         }
 
-        private void Track_Load()
+        private List<List<Data>> Track_Load(List<List<Data>> _AllRoutes)
         {
-            using (OpenFileDialog ofDlg = new OpenFileDialog())
+            List<List<Data>> newAllRoutes = new List<List<Data>>(_AllRoutes);
+            readerProcess_ok = false;
+
+            try
             {
-                // Datei öffnen -> InitialDirectory does NOT WORK
-                ofDlg.InitialDirectory = strWorkPath + "/Tracks";
-                ofDlg.Filter = "GPX Files (*.gpx)|*.gpx|All Files (*.*)|*.*";
-                if (ofDlg.ShowDialog() == DialogResult.OK)
+                using (OpenFileDialog ofDlg = new OpenFileDialog())
                 {
-                    try
+                    ofDlg.InitialDirectory = strWorkPath + "/Tracks";
+                    //ofDlg.InitialDirectory = root_path + Tracks_Dir;
+                    ofDlg.Filter = "GPX Files (*.gpx)|*.gpx|All Files (*.*)|*.*";
+                    if (ofDlg.ShowDialog() == DialogResult.OK)
                     {
-                        // Erzeuge Xml-Dokumnent + Liste der Track-Punkte
-                        XmlDocument docXML = new XmlDocument();
-                        docXML.Load(ofDlg.FileName);
+                        Cursor = Cursors.WaitCursor; // Wait-Cursor will be shown for time of writing process
 
-                        XmlNodeList elemList = docXML.GetElementsByTagName("trkpt");
-                        XmlNodeList elemList2 = docXML.GetElementsByTagName("ele");
-
-                        List<Data> EinzelRoute = new List<Data>();
-
-                        // First element needs special treatment due to calc of dist and time...
-
-                        string dummy_lon;
-                        string dummy_lat;
-
-                        if (elemList[0].Attributes[0].Name == "lon") // to be on safe side, in case lat and lon attributes are mixed-up in GPX file
+                        using (GpxReader reader = new GpxReader(new FileStream(ofDlg.FileName, FileMode.Open)))
                         {
-                            dummy_lon = elemList[0].Attributes[0].Value;
-                            dummy_lat = elemList[0].Attributes[1].Value;
+                            Gpx2RPS writer = new Gpx2RPS();
+
+                            while (reader.Read())
+                            {
+
+                                switch (reader.ObjectType)
+                                {
+                                    case GpxObjectType.Track:
+
+                                        newAllRoutes = writer.WriteGPX2RPS(reader.Track);
+                                        break;
+                                }
+                            }
+
+                            readerProcess_ok = true;
                         }
-                        else
-                        {
-                            dummy_lon = elemList[0].Attributes[1].Value;
-                            dummy_lat = elemList[0].Attributes[0].Value;
-                        }
-
-                        string dummy_lon_old = dummy_lon; // for distance calculation
-                        string dummy_lat_old = dummy_lat;
-
-                        Data TrackPoint0 = new Data(
-                            Convert.ToDouble(dummy_lat, CultureInfo.InvariantCulture),
-                            Convert.ToDouble(dummy_lon, CultureInfo.InvariantCulture),
-                            Convert.ToDouble(elemList2[0].InnerXml, CultureInfo.InvariantCulture),
-                                0, 0);
-                        EinzelRoute.Add(TrackPoint0);
-
-                        // Now, here comes the rest...
-                        for (int i = 1; i < elemList.Count; i++)
-                        {
-                            if (elemList[0].Attributes[0].Name == "lon") // to be on safe side, in case lat and lon attributes are mixed-up in GPX file
-                            {
-                                dummy_lon = elemList[i].Attributes[0].Value;
-                                dummy_lat = elemList[i].Attributes[1].Value;
-                            }
-                            else
-                            {
-                                dummy_lon = elemList[i].Attributes[1].Value;
-                                dummy_lat = elemList[i].Attributes[0].Value;
-                            }
-
-                            double Abstand = RoutingHelpers.GetDistanceBetweenTwoPoints(
-                                Convert.ToDouble(dummy_lat_old, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(dummy_lon_old, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(dummy_lat, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(dummy_lon, CultureInfo.InvariantCulture));
-
-                            dummy_lon_old = dummy_lon;
-                            dummy_lat_old = dummy_lat;
-
-                            double Zeit = (double)Abstand / 4000 * 3600; // this is for pedestrian w/ 4km/h
-
-                            // get the right profile (for time calculation).     
-                            if (hike)
-                            {
-                                Zeit = (double)Abstand / 4000 * 3600; // this is for pedestrian w/ 4km/h
-                            }
-                            if (cross)
-                            {
-                                Zeit = (double)Abstand / 20000 * 3600; // this is for bike w/ 20km/h
-                            }
-                            if (race)
-                            {
-                                Zeit = (double)Abstand / 24000 * 3600; // this is for car w/ 24km/h
-                            }
-
-                            Data TrackPoint = new Data(
-                                Convert.ToDouble(dummy_lat, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(dummy_lon, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(elemList2[i].InnerXml, CultureInfo.InvariantCulture),
-                                EinzelRoute[i - 1].Time + (int)Zeit, EinzelRoute[i - 1].Distance + Abstand);
-
-                            EinzelRoute.Add(TrackPoint);
-                        }
-
-                        AllRoutes.Add(EinzelRoute);
-                        Gesamtstrecke = (int)EinzelRoute[EinzelRoute.Count - 1].Distance;
-                        Gesamtzeit = EinzelRoute[EinzelRoute.Count - 1].Time;
-
-                        textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000") + " km";
-                        int Stunden = (int)Gesamtzeit / 3600;
-                        int Rest = (int)Gesamtzeit % 3600;
-                        int Minuten = Rest / 60;
-                        textBox_TotT.Text = Stunden.ToString() + "h " + Minuten.ToString() + " Minuten";
-
-                        // Integrate mouse klick (2 klicks)
-                        Data Klick1 = new Data(
-                                Convert.ToDouble(elemList[0].Attributes[0].Value, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(elemList[0].Attributes[1].Value, CultureInfo.InvariantCulture),
-                                0, 0, 0);
-                        Data Klick2 = new Data(
-                                Convert.ToDouble(elemList[elemList.Count - 1].Attributes[0].Value, CultureInfo.InvariantCulture),
-                                Convert.ToDouble(elemList[elemList.Count - 1].Attributes[1].Value, CultureInfo.InvariantCulture),
-                                0, 0, 0);
-                        MouseKlicks.Add(Klick1);
-                        MouseKlicks.Add(Klick2);
-
-                        Center_Track(AllRoutes);
-                    }
-                    catch (Exception ex)
-                    {
-                        MessageBox.Show(ex.Message);
                     }
                 }
             }
-        } // load data from xml-file and plot track
 
-        private Bitmap plot_Image()
+            catch (Exception ex)
+            {
+                MessageBox.Show(ex.Message);
+            }
+
+            finally
+            {
+                Cursor = Cursors.Default;
+            }
+
+            return newAllRoutes;
+        }
+    
+        private Bitmap Plot_Image()
         {
             Bitmap fusionImage = new Bitmap(Width, Height);
             Bitmap chart_image = new Bitmap(chart_ele.Width, chart_ele.Height, PixelFormat.Format32bppArgb);
@@ -320,12 +354,13 @@ namespace RPS
                 // Plot route information top left into image...
                 SolidBrush whiteBrush = new SolidBrush(Color.White);
 
-                string map_text = "Distance: " + textBox_Dis.Text + " / Expected TotalTime: " + textBox_TotT.Text;
+                string map_text = "Distance: " + textBox_Dis.Text + " / Expected Elevetion: " + textBox_ElevUp.Text
+                    + " / Road: " + textBox_road.Text + " / Way: " + textBox_way.Text + " / Path: " + textBox_path.Text;
                 Font drawFont = new Font("Microsoft Sans Serif", 12, FontStyle.Regular, GraphicsUnit.Point, 0);
 
                 // getting the right dimension of the text background box... (using TextRenderer.MeasureText method)
                 Size size = TextRenderer.MeasureText(map_text, drawFont);
-                Rectangle Rahmen = new Rectangle(10, 10, size.Width + 15, size.Height);
+                Rectangle Rahmen = new Rectangle(10, 10, size.Width + 35, size.Height);
 
                 grfx.FillRectangle(whiteBrush, Rahmen);
 
@@ -351,6 +386,7 @@ namespace RPS
             // Displays a SaveFileDialog so the user can save the Image
             SaveFileDialog saveFileDialog1 = new SaveFileDialog();
             saveFileDialog1.InitialDirectory = strWorkPath + "\\Tracks";
+            //saveFileDialog1.InitialDirectory = root_path + Tracks_Dir;
             saveFileDialog1.Filter = "PNG Image|*.png|Bitmap Image|*.bmp|JPEG Image|*.jpg|Gif Image|*.gif";
             saveFileDialog1.Title = "Save an Image File";
             saveFileDialog1.ShowDialog();
@@ -383,7 +419,7 @@ namespace RPS
                         default:
                             throw new NotSupportedException("File extension is not supported");
                     }
-                    plot_Image().Save(fs, imageFormat);
+                    Plot_Image().Save(fs, imageFormat);
                 }
             }
         }
@@ -417,9 +453,10 @@ namespace RPS
 
                     try
                     {
-                        Cursor = Cursors.WaitCursor; // Sanduhr wird für die Zeit des Routings angezeigt
-                                                     // create a routerpoint from a location.                             
-                                                     // snaps the given location to the nearest routable edge.
+                        Cursor = Cursors.WaitCursor; // Sand glas will be shown for endurance of routing process
+
+                        // create a routerpoint from a location.                             
+                        // snaps the given location to the nearest routable edge.
                         var start = router.Resolve(profile, (float)start_Lat, (float)start_Lon, 250); // 250m radius for search of next routing point in routing db
                         var end = router.Resolve(profile, (float)ziel_Lat, (float)ziel_Lon, 250); // standard = 50m is to less 
 
@@ -428,17 +465,83 @@ namespace RPS
                         // Elevation data from SRTM - data-log to NASA sever does not work -> since 2014 NASA blocked direct log! 
                         // SRTMData srtmData = new SRTMData(root_path + "\\source\\repos\\00_Data\\16_SRTM", new NASASource(credentials));
 
+                        using (var writer = new StreamWriter(@"route.XML"))
+                        {
+                            route.WriteXml(writer);
+                        }
+
+                        XmlDocument doc = new XmlDocument();
+                        doc.Load(@"route.XML");
+                        XmlNodeList elemList = doc.GetElementsByTagName("meta");
+
+                        XmlWriterSettings settings = new XmlWriterSettings();
+                        settings.Indent = true;
+                        settings.NewLineOnAttributes = true;
+
+                        double Strasse_Asphalt = 0;
+                        double Feld_ForstWeg = 0;
+                        double WanderWeg_Pfad = 0;
+
+                        string _route = "";
+
+                        double helpVariable_dist = 0;
+                        for (int i = 0; i < elemList.Count; i++)
+                        {
+                            for (int k = 0; k < elemList[i].ChildNodes.Count; k++)
+                            {
+                                if (elemList[i].ChildNodes[k].Attributes[0].Value.ToString() == "highway")
+                                {
+                                    switch (elemList[i].ChildNodes[k].Attributes[1].Value.ToString())
+                                    {
+                                        case "path":
+                                            _route = "path";
+                                            break;
+                                        case "track":
+                                            _route = "track";
+                                            break;
+                                        default:
+                                            _route = "road";
+                                            break;
+                                    }
+                                }
+                                if (elemList[i].ChildNodes[k].Attributes[0].Value.ToString() == "distance")
+                                {
+                                    switch (_route)
+                                    {
+                                        case "path":
+                                            WanderWeg_Pfad += (Convert.ToDouble(elemList[i].ChildNodes[k].Attributes[1].Value.ToString(), CultureInfo.InvariantCulture) - helpVariable_dist);
+                                            break;
+                                        case "track":
+                                            Feld_ForstWeg += (Convert.ToDouble(elemList[i].ChildNodes[k].Attributes[1].Value.ToString(), CultureInfo.InvariantCulture) - helpVariable_dist);
+                                            break;
+                                        case "road":
+                                            Strasse_Asphalt += (Convert.ToDouble(elemList[i].ChildNodes[k].Attributes[1].Value.ToString(), CultureInfo.InvariantCulture) - helpVariable_dist);
+                                            break;
+                                    }
+                                    helpVariable_dist = Convert.ToDouble(elemList[i].ChildNodes[k].Attributes[1].Value.ToString(), CultureInfo.InvariantCulture);
+                                }
+                            }
+                        }
+
                         var srtmData = new SRTM.SRTMData(strWorkPath + "\\SRTM_Data", new USGSSource());
 
                         List<Data> EinzelRoute = new List<Data>();
 
-                        for (int i = 0; i < route.Shape.Length; i++)
+                        // First element with special treatment (getting time and distance values from prior shape) -> for "skip-last-klick" methode 
+                        
+                        Data TrackPoint0 = new Data(route.Shape[0].Latitude, route.Shape[0].Longitude,
+                                (double)RoutingHelpers.Check4NegativeValue(srtmData.GetElevation(route.Shape[0].Latitude, route.Shape[0].Longitude)),
+                                Gesamtzeit, Gesamtstrecke, GesamtAsphalt, GesamtWeg, GesamtPfad);
+
+                        EinzelRoute.Add(TrackPoint0);
+
+                        for (int i = 1; i < route.Shape.Length; i++)
                         {
 
                             Data TrackPoint = new Data(route.Shape[i].Latitude, route.Shape[i].Longitude,
-                                (double)RoutingHelpers.check4NegativeValue(srtmData.GetElevation(route.Shape[i].Latitude, route.Shape[i].Longitude)),
-                                Gesamtzeit + ((int)route.TotalTime / route.Shape.Length * (i + 1)),
-                                Gesamtstrecke + ((int)route.TotalDistance / route.Shape.Length * (i + 1)));
+                                (double)RoutingHelpers.Check4NegativeValue(srtmData.GetElevation(route.Shape[i].Latitude, route.Shape[i].Longitude)),
+                                Gesamtzeit + (int)(route.TotalTime / route.Shape.Length * (i + 1)), Gesamtstrecke + (int)(route.TotalDistance / route.Shape.Length * (i + 1)), 
+                                Strasse_Asphalt, Feld_ForstWeg, WanderWeg_Pfad);
 
                             EinzelRoute.Add(TrackPoint);
                         }
@@ -447,6 +550,9 @@ namespace RPS
 
                         Gesamtzeit += (int)route.TotalTime;
                         Gesamtstrecke += (int)route.TotalDistance;
+                        GesamtAsphalt += Strasse_Asphalt;
+                        GesamtWeg += Feld_ForstWeg;
+                        GesamtPfad += WanderWeg_Pfad;
                     }
                     catch (Exception ex)
                     {
@@ -462,7 +568,7 @@ namespace RPS
                 {
                     try
                     {
-                        Cursor = Cursors.WaitCursor; // Sanduhr wird für die Zeit des Routings angezeigt
+                        Cursor = Cursors.WaitCursor; // Sand glass will be shown while SRTM processing
 
                         List<Data> EinzelRoute = new List<Data>();
 
@@ -483,7 +589,6 @@ namespace RPS
                             Zeit = Abstand / 40000 * 3600; // this is for car w/ 40km/h
                         }
 
-
                         var srtmData = new SRTM.SRTMData(strWorkPath + "\\SRTM_Data", new USGSSource());
 
                         //Data TrackPoint1 = new Data(start_Lat, start_Lon, (double)srtmData.GetElevationBilinear(start_Lat, start_Lon), Gesamtzeit, Gesamtstrecke);
@@ -500,6 +605,7 @@ namespace RPS
 
                         Gesamtzeit += (int)Zeit;
                         Gesamtstrecke += (int)Abstand;
+                        GesamtPfad += Abstand; // Assumption: all off-road distances are path
                     }
                     catch (Exception ex)
                     {
@@ -514,32 +620,38 @@ namespace RPS
 
                 Invalidate();
 
-                textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000"); // Convert to km
-                int Stunden = (int)Gesamtzeit / 3600;
-                int Rest = (int)Gesamtzeit % 3600;
-                int Minuten = Rest / 60;
-                textBox_TotT.Text = Stunden.ToString() + "h " + Minuten.ToString() + "Minuten";
+                Calc_Elevation(RoutingHelpers.GetEleData(AllRoutes));
 
-                make_Graph();
+                textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000") + " km";
+                textBox_road.Text = (GesamtAsphalt / 1000).ToString("#0.000");
+                textBox_way.Text = (GesamtWeg / 1000).ToString("#0.000") + " km";
+                textBox_path.Text = (GesamtPfad / 1000).ToString("#0.000") + " km";
+
+                Make_Graph();
             }
         }
 
-        private void newRoute()
+        private void NewRoute()
         {
             MouseKlicks.Clear();
             AllRoutes.Clear();
             Gesamtstrecke = 0;
             Gesamtzeit = 0;
+            GesamtAsphalt = 0;
+            GesamtWeg = 0;
+            GesamtPfad = 0;
 
             localDate = DateTime.Now;
 
             textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000");
-            int Stunden = (int)Gesamtzeit / 3600;
-            int Rest = (int)Gesamtzeit % 3600;
-            int Minuten = Rest / 60;
-            textBox_TotT.Text = Stunden.ToString() + "h " + Minuten.ToString() + "Minuten";
+            textBox_ElevUp.Text = "0 m";
+            textBox_ElevDown.Text = "0 m";
+            
+            textBox_road.Text = (GesamtAsphalt / 1000).ToString("#0.000");
+            textBox_way.Text = (GesamtWeg / 1000).ToString("#0.000") + " km";
+            textBox_path.Text = (GesamtPfad / 1000).ToString("#0.000") + " km";
 
-            make_Graph();
+            Make_Graph();
         }
         //
         // ------------------------------------------------------------------------------------------------------------------------------
@@ -577,6 +689,7 @@ namespace RPS
             if (_newDB)
             {
                 string[] shape_files = Directory.GetFiles(strWorkPath + @"\Router_DB", "*.routerdb_All");
+                //string[] shape_files = Directory.GetFiles(root_path + @RouterDB_Dir, "*.routerdb_All");
 
                 for (int s = 0; s < all_RegShape.Count; s++)
                 {
@@ -593,7 +706,7 @@ namespace RPS
 
                     if (RoutingHelpers.IsPointInPolygon4(shape_Reg, _mousePosition))
                     {
-                        load_routerDB(shape_files[s], true);
+                        Load_routerDB(shape_files[s], true);
                         Invalidate();
                     }
                 }
@@ -604,95 +717,163 @@ namespace RPS
         // 
         // Routing Events (Buttons)
         //
-        private void radioButton_Hik_CheckedChanged(object sender, EventArgs e)
+        private void RadioButton_Hik_CheckedChanged(object sender, EventArgs e)
         {
             hike = true;
             cross = false;
             race = false;
         }
 
-        private void radioButton_Cross_CheckedChanged(object sender, EventArgs e)
+        private void RadioButton_Cross_CheckedChanged(object sender, EventArgs e)
         {
             hike = false;
             cross = true;
             race = false;
         }
 
-        private void radioButton_Race_CheckedChanged(object sender, EventArgs e)
+        private void RadioButton_Race_CheckedChanged(object sender, EventArgs e)
         {
             hike = false;
             cross = false;
             race = true;
         }
 
-        private void checkBox_Boundary_Click(object sender, EventArgs e)
+        private void CheckBox_Boundary_Click(object sender, EventArgs e)
         {
             Invalidate();
         }
 
-        private void checkBox_DataBase_CheckedChanged(object sender, EventArgs e)
+        private void CheckBox_DataBase_CheckedChanged(object sender, EventArgs e)
         {
             Invalidate();
         }
 
-        private void button_newRoute_Click(object sender, EventArgs e)
+        private void Button_newRoute_Click(object sender, EventArgs e)
         {
-            newRoute();
+            NewRoute();
         }
 
-        private void button_SkipLastPart_Click(object sender, EventArgs e)
+        private void Button_SkipLastPart_Click(object sender, EventArgs e)
         {
             if (AllRoutes.Any()) //prevent IndexOutOfRangeException for empty list - code snippet from code.grepper.com
             {
-                Gesamtstrecke = (int)AllRoutes[AllRoutes.Count - 1][0].Distance;
+
+                if (MouseKlicks.Count > 2) Gesamtstrecke = (int)AllRoutes[AllRoutes.Count - 1][0].Distance;
+                else Gesamtstrecke = 0;
+
                 Gesamtzeit = (int)AllRoutes[AllRoutes.Count - 1][0].Time;
+                GesamtAsphalt = AllRoutes[AllRoutes.Count - 1][0].Road;
+                GesamtWeg = AllRoutes[AllRoutes.Count - 1][0].Rought_Road;
+                GesamtPfad = AllRoutes[AllRoutes.Count - 1][0].Path;
 
                 MouseKlicks.RemoveAt(MouseKlicks.Count - 1);
                 AllRoutes.RemoveAt(AllRoutes.Count - 1);
 
+                Calc_Elevation(RoutingHelpers.GetEleData(AllRoutes));
+
                 textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000") + " km";
-                int Stunden = (int)Gesamtzeit / 3600;
-                int Rest = (int)Gesamtzeit % 3600;
-                int Minuten = Rest / 60;
-                textBox_TotT.Text = Stunden.ToString() + "h " + Minuten.ToString() + " Minuten";
+                textBox_road.Text = (GesamtAsphalt / 1000).ToString("#0.000");
+                textBox_way.Text = (GesamtWeg / 1000).ToString("#0.000") + " km";
+                textBox_path.Text = (GesamtPfad / 1000).ToString("#0.000") + " km";
 
                 Invalidate();
                 // bereits in make_Graph einthalten
 
-                make_Graph();
+                Make_Graph();
             }
         }
 
-        private void button_LoadGPX_Click(object sender, EventArgs e)
+        private void Button_LoadGPX_Click(object sender, EventArgs e)
         {
-            MouseKlicks.Clear();
-            AllRoutes.Clear();
-            Gesamtstrecke = 0;
-            Gesamtzeit = 0;
+            AllRoutes = Track_Load(AllRoutes);
 
-            Track_Load();
+            if (readerProcess_ok) // only if reading of GPX file was successful
+            {
+                MouseKlicks.Clear();
+                Gesamtstrecke = 0;
+                Gesamtzeit = 0;
+                Get_SurfaceInformation(AllRoutes[0]);
 
-            minX_Value = 1000;
-            maxX_Value = 1001;
-            make_Graph();
+                Gesamtstrecke = (int)AllRoutes[0][AllRoutes[0].Count - 1].Distance;
+                Gesamtzeit = AllRoutes[0][AllRoutes[0].Count - 1].Time;
+
+                Calc_Elevation(RoutingHelpers.GetEleData(AllRoutes));
+
+                textBox_Dis.Text = ((double)Gesamtstrecke / 1000).ToString("#0.000") + " km";
+                textBox_road.Text = (GesamtAsphalt / 1000).ToString("#0.000");
+                textBox_way.Text = (GesamtWeg / 1000).ToString("#0.000") + " km";
+                textBox_path.Text = (GesamtPfad / 1000).ToString("#0.000") + " km";
+
+                // Integrate mouse klick (2 klicks)
+                Data Klick1 = new Data(AllRoutes[0][0].Lat, AllRoutes[0][0].Lon, 0, 0, 0);
+                Data Klick2 = new Data(
+                        AllRoutes[0][AllRoutes[0].Count - 1].Lat, AllRoutes[0][AllRoutes[0].Count - 1].Lon, 0, 0, 0);
+                MouseKlicks.Add(Klick1);
+                MouseKlicks.Add(Klick2);
+
+                Center_Track(AllRoutes);
+
+                minX_Value = 1000;
+                maxX_Value = 1001;
+                Make_Graph();
+            }
         }
 
-        private void button_CenterTrack_Click(object sender, EventArgs e)
+        private void Button_CenterTrack_Click(object sender, EventArgs e)
         {
             Center_Track(AllRoutes);
         }
 
-        private void button_saveGPX_Click(object sender, EventArgs e)
+        private void Button_saveGPX_Click(object sender, EventArgs e)
         {
-            RoutingIO.save_Track(AllRoutes, localDate);
+            RoutingIO.Save_Track(AllRoutes, localDate);
 
         }
 
-        private void button_saveImage_Click(object sender, EventArgs e)
+        private void Button_Mail_Click(object sender, EventArgs e)
+        {
+            using (OpenFileDialog ofDlg = new OpenFileDialog())
+            {
+                ofDlg.InitialDirectory = strWorkPath + "/Tracks";
+                ofDlg.Filter = "GPX Files (*.gpx)|*.gpx|PNG Image|*.png|Bitmap Image|*.bmp|JPEG Image|*.jpg|Gif Image|*.gif|All Files (*.*)|*.*";
+                if (ofDlg.ShowDialog() == DialogResult.OK)
+                {
+                    try
+                    {
+                        MailMaker mail = new MailMaker()
+                        {
+                            Absender = "stefan.nufer@t-online.de",
+                            Empfänger = new List<string>() { "stefan.nufer@t-online.de" },
+                            Kopie = new List<string>(),
+                            Blindkopie = new List<string>(),
+                            Betreff = Path.GetFileName(ofDlg.FileName).ToString(),
+                            Nachricht = "Tour by SNuf" + DateTime.Today.Year.ToString(),
+                            Servername = "securesmtp.t-online.de",
+                            Port = "587",
+                            Username = Mail_Username,
+                            Passwort = Mail_key,
+                            Anhänge = new List<Attachment> { new Attachment(ofDlg.FileName) }
+                        };
+
+                        mail.Send();
+
+                        MessageBox.Show("File was sent to nufers@t-online.de");
+
+                    }
+                    catch (Exception ex)
+                    { 
+                        MessageBox.Show(ex.Message);
+                    }
+                }
+            }
+        } // load data from xml-file and plot track
+
+        private void Button_saveImage_Click(object sender, EventArgs e)
         {
             Safe_Image();
         }
-        private void button_newRouteDB_Click(object sender, EventArgs e)
+        
+        private void Button_newRouteDB_Click(object sender, EventArgs e)
         {
             if (!_newDB)
             {
@@ -704,19 +885,7 @@ namespace RPS
                 _newDB = false;
                 button_newRouteDB.Text = "Load new Route-DataBase";
             }
-            /*
-            using (OpenFileDialog ofDlg = new OpenFileDialog())
-            {
-                // Start with the right directory...
-                ofDlg.InitialDirectory = root_path + "\\source\\repos\\00_Data\\04_Landkarte";
-                // open file...
-                ofDlg.Filter = "Select RouterDB file|*_All|All files|*.*";
-                if (ofDlg.ShowDialog() == DialogResult.OK)
-                {
-                    load_routerDB(ofDlg.FileName, true);
-                }
-            }
-            */
+           
             Invalidate();
         }
 
@@ -727,7 +896,7 @@ namespace RPS
         //
         // Elevation - Eventhandler
         //
-        private void chart_ele_MouseDown(object sender, MouseEventArgs e)
+        private void Chart_ele_MouseDown(object sender, MouseEventArgs e)
         {
             // Methode for marking elevation data...
             // Determine the initial coordinates...
@@ -742,7 +911,7 @@ namespace RPS
             label_delta.Visible = true;
         }
 
-        private void chart_ele_MouseMove(object sender, MouseEventArgs e)
+        private void Chart_ele_MouseMove(object sender, MouseEventArgs e)
         {
             if (mouseDown)
             {
@@ -761,7 +930,7 @@ namespace RPS
             }
         }
 
-        private void chart_ele_MouseUp(object sender, MouseEventArgs e)
+        private void Chart_ele_MouseUp(object sender, MouseEventArgs e)
         {
             mouseDown = false;
             bool first_Hit = true;
@@ -791,10 +960,10 @@ namespace RPS
             label_delta.Text = " Delta: " + (maxX_Value - minX_Value).ToString("###0.##km") + " / " + (maxX_Alt - minX_Alt).ToString("###0m")
                     + " / " + ((maxX_Alt - minX_Alt) / (maxX_Value - minX_Value) / 1000).ToString("#0%");
 
-            make_Graph();
+            Make_Graph();
         }
 
-        private void chart_ele_Paint(object sender, PaintEventArgs e)
+        private void Chart_ele_Paint(object sender, PaintEventArgs e)
         {
             e.Graphics.DrawRectangle(Marker_Pen, RcDraw);
             Invalidate();
@@ -802,7 +971,7 @@ namespace RPS
         //
         // Elevation chart - method
         //
-        private void make_Graph()
+        private void Make_Graph()
         {
             this.chart_ele.Series.Clear();
             Series series = this.chart_ele.Series.Add("Elevation");
@@ -840,9 +1009,9 @@ namespace RPS
                         series.Points.AddXY(AllRoutes[i][k].Distance / 1000, AllRoutes[i][k].Alt);
                     }
                 }
-                chart_ele.ChartAreas[0].AxisY.Maximum = RoutingHelpers.getmaxEle(AllRoutes) * 1.02; // sets the Maximum + 2%
-                chart_ele.ChartAreas[0].AxisY.Minimum = RoutingHelpers.getminEle(AllRoutes) * 0.98; // sets the Minimum - 2%
-                chart_ele.ChartAreas[0].RecalculateAxesScale(); // falls bei laufendem Programm Höhenpunkte dazu kommen...
+                chart_ele.ChartAreas[0].AxisY.Maximum = RoutingHelpers.GetmaxEle(AllRoutes) * 1.02; // sets the Maximum + 2%
+                chart_ele.ChartAreas[0].AxisY.Minimum = RoutingHelpers.GetminEle(AllRoutes) * 0.98; // sets the Minimum - 2%
+                chart_ele.ChartAreas[0].RecalculateAxesScale(); // if new min/max values come in (e.g. while making new route)
             }
         }
 
@@ -880,30 +1049,32 @@ namespace RPS
 
             _renderer = new Renderer(_buffer, _route);
 
-            //_tileSource = KnownTileSources.Create();
+            // Thunderforest source
+            //_tileSource = new HttpTileSource(new GlobalSphericalMercator(0, 19), API_key, new[] { "a", "b", "c" }, "OSM");
+            
             // OSM source
-            _tileSource = new HttpTileSource(new GlobalSphericalMercator(0, 19), "https://tile.thunderforest.com/landscape/{z}/{x}/{y}.png?apikey=" + API_key, new[] { "a", "b", "c" }, "OSM");
+            _tileSource = KnownTileSources.Create(KnownTileSource.OpenStreetMap);
 
             _fetcher = new Fetcher<Image>(_tileSource, _tileCache);
             _fetcher.DataChanged += FetcherOnDataChanged;
         }
 
-        private static bool TryInitializeViewport(ref Viewport viewport, double actualWidth, double actualHeight, ITileSchema schema)
+        private static bool TryInitializeViewport(ref Viewport viewport, double actualWidth, double actualHeight, ITileSchema schema, double _Initial_Lon, double _Initial_Lat, double _Initial_Zoom)
         {
             if (double.IsNaN(actualWidth)) return false;
             if (actualWidth <= 0) return false;
 
             //var nearestLevel = Utilities.GetNearestLevel(schema.Resolutions, schema.Extent.Width / actualWidth);
-            var nearestLevel = Utilities.GetNearestLevel(schema.Resolutions, 305.748113086f);
-            // Manipuliere so dass start mit BW scale erfolgt... -> Zoom = 8 -> 1222.992452344f / Zoom = 9 -> 305.748113086f
-            viewport = new Viewport
+            var nearestLevel = Utilities.GetNearestLevel(schema.Resolutions, _Initial_Zoom);
+
+        viewport = new Viewport
             {
                 Width = actualWidth,
                 Height = actualHeight,
                 UnitsPerPixel = schema.Resolutions[nearestLevel].UnitsPerPixel,
                 //Center = new Point((int)schema.Extent.CenterX, (int)schema.Extent.CenterY)
-                Center = new Point((int)(9.1 * 20037508 / 180), (int)((System.Math.Log(System.Math.Tan((48.5 + 90) / 360 * System.Math.PI)) / System.Math.PI * 180) * 20037508 / 180)) // eventuell kann auch PointD benutzt werden
-                // Manipuliere so dass start mit Fokus auf BW erfolgt... -> Lon = 9.1 und Lat = 48.5 (Y ist wegen Mercator-Korrektur etwas komplexer...
+                Center = new Point((int)(_Initial_Lon * 20037508 / 180), (int)((System.Math.Log(System.Math.Tan((_Initial_Lat + 90) / 360 * System.Math.PI)) / System.Math.PI * 180) * 20037508 / 180)) // eventuell kann auch PointD benutzt werden
+                // Manipuliere so dass start mit Fokus auf BW erfolgt... -> Initial_Lon = 9.1 und Initial_Lat = 48.5 (Y ist wegen Mercator-Korrektur etwas komplexer...)
             };
             return true;
         }
@@ -933,7 +1104,7 @@ namespace RPS
 
             if (_viewport == null)
             {
-                if (!TryInitializeViewport(ref _viewport, this.Width, this.Height, _tileSource.Schema)) return;
+                if (!TryInitializeViewport(ref _viewport, this.Width, this.Height, _tileSource.Schema, Initial_Lon, Initial_Lat, Initial_Zoom)) return;
                 _fetcher.ViewChanged(_viewport.Extent, _viewport.UnitsPerPixel); // start fetching when viewport is first initialized
             }
 
@@ -979,20 +1150,19 @@ namespace RPS
         //
         // MapControl Events (Buttons)
         //
-        private void radioButton_Map_CheckedChanged(object sender, EventArgs e)
+        private void RadioButton_Map_CheckedChanged(object sender, EventArgs e)
         {
-            SetTileSource(new HttpTileSource(new GlobalSphericalMercator(0, 19),
-                "https://tile.thunderforest.com/landscape/{z}/{x}/{y}.png?apikey=" + API_key, new[] { "a", "b", "c" }, "OSM"),
-                _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
+            //SetTileSource(new HttpTileSource(new GlobalSphericalMercator(0, 19), API_key, new[] { "a", "b", "c" }, "OSM"), _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
 
-            //SetTileSource(KnownTileSources.Create(), _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
+            SetTileSource(KnownTileSources.Create(KnownTileSource.OpenStreetMap), _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
         }
-        private void radioButton_Sat_CheckedChanged(object sender, EventArgs e)
+        
+        private void RadioButton_Sat_CheckedChanged(object sender, EventArgs e)
         {
             SetTileSource(KnownTileSources.Create(KnownTileSource.BingAerial), _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
         }
 
-        private void radioButton_Hyb_CheckedChanged(object sender, EventArgs e)
+        private void RadioButton_Hyb_CheckedChanged(object sender, EventArgs e)
         {
             SetTileSource(KnownTileSources.Create(KnownTileSource.BingHybrid), _viewport.UnitsPerPixel, _viewport.CenterX, _viewport.CenterY);
         }
@@ -1080,6 +1250,6 @@ namespace RPS
             base.OnResize(e);
         }
 
-
+        
     }
 }
